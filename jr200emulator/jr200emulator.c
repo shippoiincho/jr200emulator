@@ -67,7 +67,7 @@
 extern unsigned char vga_data_array[];
 volatile uint8_t fbcolor,cursor_x,cursor_y,video_mode;
 
-volatile uint32_t video_hsync,video_vsync,scanline,vsync_scanline;
+volatile uint32_t video_hsync,video_vsync,scanline,vsync_scanline,total_scanline;
 
 struct repeating_timer timer,timer2;
 
@@ -107,16 +107,18 @@ uint8_t keymap[11];
 volatile uint8_t keypressed=0;  //last pressed usbkeycode
 uint32_t key_caps=0;            // Keyboard LED status
 uint32_t key_kana=0;
-uint32_t key_kana_jis=1;        // Kana Keyboard select 
+uint32_t key_graph=0;        // Kana Keyboard select 
 
 uint32_t key_irq=0;
 uint32_t key_break_flag=0;
 #define KEYBOARD_WAIT   32
 uint32_t keyboard_cycles;
 uint32_t joystick_count=0;      // SUBCPU command count
-uint32_t key_repeat_flag=0;
+uint32_t key_repeat_flag=1;
 uint32_t key_repeat_count=0;
 uint32_t key_basic_flag=0;      // TYPE BASIC 
+uint32_t key_basic_code=0;
+uint32_t key_basic_bytes=0;
 
 uint32_t lastmodifier=0;
 uint32_t jr200keypressed=0;
@@ -224,6 +226,8 @@ void __not_in_flash_func(hsync_handler)(void) {
     pio_interrupt_clear(pio0, 0);
 
     scandata=(uint8_t *)renderbuffer;
+
+    total_scanline++;
 
     if((scanline!=0)&&(gpio_get(1)==0)) { // VSYNC
         scanline=0;
@@ -1422,6 +1426,11 @@ static inline int16_t getkeycode(uint8_t modifier,uint8_t keycode) {
 
     if(modifier&0x11) {  // Control
 
+        if((key_basic_flag==0)&&(jr200basiccode[keycode][0]!=0)) {  // BASIC keyword input
+
+            return 0x100;
+        }
+
         jr200code=jr200usbcode[keycode*5];
 
         // Auto repeat control (SHIT+CTRL+0/1)
@@ -1438,6 +1447,7 @@ static inline int16_t getkeycode(uint8_t modifier,uint8_t keycode) {
 
         if(jr200code==0) return -1;
 
+        if(jr200code<0x20) return jr200code;
         if(jr200code==0x40) return 0;
         if((jr200code>=0x61)&&(jr200code<=0x7a)) return jr200code-0x60;
         if((jr200code>=0x5b)&&(jr200code<=0x5f)) return jr200code-0x40;
@@ -1542,10 +1552,21 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
 //        printf("[MK:%d,%d]",fm7code,main_cpu.cc.i);
 
                     if(key_repeat_flag) {
-                        key_repeat_count=scanline;
+                        key_repeat_count=total_scanline;
+  printf("[KR:%d]",key_repeat_count);                      
                     }
 
                 }
+
+                if(jr200code==0x100) { // BASIC Keyword mode
+                    key_irq=1;
+                    key_basic_code=report->keycode[i];
+                    key_basic_bytes=0;
+                    via_reg[0x1c]|=1;
+                    keyboard_cycles=cpu_cycles;
+                    return;
+                }
+                key_basic_code=0;
 
                 // CapsLock
 
@@ -1561,13 +1582,16 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
                 // Kana
 
                 if(keypressed==0x88) {
-                    if(key_kana==0) {
                         key_kana=1;
-                    } else {
-                        key_kana=0;
-                    }
 //                    process_kbd_leds();
                 }
+
+                // Caps
+                if(keypressed==0x39) {
+                    key_kana=0;
+
+//                    process_kbd_leds();
+            }
 
                 // Break
 
@@ -1615,6 +1639,8 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
 
 uint8_t subcpu_read() {
 
+    uint8_t keycode;
+
 //printf("[S:%04x]",m6800_get_reg(M6800_PC));
 
     // Clear IRQ signal
@@ -1647,6 +1673,16 @@ uint8_t subcpu_read() {
 
 
         } else { // Keyboard
+
+            if((key_basic_flag==0)&&(key_basic_code!=0)) {
+                keycode=jr200basiccode[key_basic_code][key_basic_bytes++];
+                if(jr200basiccode[key_basic_code][key_basic_bytes]!=0) {
+                    key_irq=1;
+                    via_reg[0x1c]|=1;
+                    keyboard_cycles=cpu_cycles;
+                }
+                return keycode;
+            }
 
 printf("[KC:%x]",jr200keypressed);
 
@@ -1833,6 +1869,13 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
                             }
                         }
                     }
+
+                    if(bdat&0x80) {
+                        key_basic_flag=1;
+                    } else {
+                        key_basic_flag=0;
+                    }
+
                     via_reg[3]=bdat;
                     return;
 
@@ -2054,6 +2097,7 @@ void init_emulator(void) {
 
     key_kana=0;
     key_caps=0;
+    key_graph=0;
 
     tape_ready=0;
     tape_leader=0;
@@ -2063,7 +2107,6 @@ void init_emulator(void) {
     subcpu_ktest=0;
 
     gamepad_info=0x3f;
-
 
 
 }
@@ -2246,13 +2289,6 @@ int main() {
         //     video_hsync=0;
         // }
 
-
-        // if((video_vsync==2)&&(cpu.iff1)) {
-        //     if(vrEmuTms9918RegValue(mainscreen,TMS_REG_1)&0x20) { // VDP Enable interrupt
-        //         z80_int(&cpu,true);
-        //     }
-        // }
-
         // if((key_break==1)&&((iomem[6]&0x80)!=0)) {
         //     //        printf("NMI:\n\r");
         //             key_break=0;
@@ -2260,7 +2296,6 @@ int main() {
         //             ENTER_INTERRUPT("", 0xfffc);
         //         }
         //     }
-
 
         if((key_irq==1)&&((cpu_cycles-keyboard_cycles)>KEYBOARD_WAIT)) {
             // IRQ
@@ -2289,10 +2324,25 @@ int main() {
 
             // Process Keyrepeat
 
+            if((key_repeat_flag)&&(key_repeat_count!=0)) {
+                if((total_scanline-key_repeat_count)==40*525) {
+
+                    key_irq=1;
+                    via_reg[0x1c]|=1;
+                    keyboard_cycles=cpu_cycles;
+
+                } else if (((total_scanline-key_repeat_count)>40*525)&&((total_scanline-key_repeat_count)%(4*525)==0)) {
+
+                    key_irq=1;
+                    via_reg[0x1c]|=1;
+                    keyboard_cycles=cpu_cycles;
+
+                }
+            }
 
 
             video_vsync=2;
-            vsync_scanline=scanline;
+            vsync_scanline=total_scanline;
       
             if((tape_autoclose)&&(save_enabled==2)) {
                 if((cpu_cycles-tape_cycles)>TAPE_THRESHOLD) {
@@ -2688,11 +2738,11 @@ int main() {
                     }
 
 
-                    if(menuitem==11) { 
-                        key_kana_jis++;
-                        if(key_kana_jis>1) key_kana_jis=0;
-                        menuprint=0;
-                    }
+                    // if(menuitem==11) { 
+                    //     key_kana_jis++;
+                    //     if(key_kana_jis>1) key_kana_jis=0;
+                    //     menuprint=0;
+                    // }
 
                     if(menuitem==12) { // Reset
                         menumode=0;
