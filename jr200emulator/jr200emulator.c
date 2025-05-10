@@ -860,6 +860,72 @@ static uint8_t tape_last_bits;
 
 #endif
 
+uint8_t tapein() {
+
+    if(!tape_ready) return;
+
+    return 0;
+
+}
+
+void tapeout(uint8_t data) {
+
+    static uint8_t cmt_bit;
+    static uint8_t cmt_buff;
+
+    if(!tape_ready) return;
+
+    if(via_reg[7]&0x20) return;
+
+    if ((cpu_cycles - tape_cycles) > TAPE_THRESHOLD ) {
+        cmt_buff = 0;
+        cmt_bit = 0;
+    }
+
+    tape_cycles=cpu_cycles;
+
+#if 0    
+    // 600 Baud
+
+    cmt_buff <<= 1;
+    if (data == 0xaa) {
+        cmt_buff++;
+    }
+    cmt_bit++;
+    if (cmt_bit == 8) {
+        printf("%02x", cmt_buff);
+        cmt_bit = 0;
+        cmt_buff = 0;
+    }
+#endif
+
+    // 2400 Baud
+
+    for(int i=0;i<4;i++) {
+        cmt_buff<<=1;
+        switch(data&3) {
+            case 0:
+            case 3:
+                break;
+    
+            case 1:
+            case 2:
+                cmt_buff++;
+                break;
+        }
+        data>>=2;
+        cmt_bit++;
+    }
+    if (cmt_bit == 8) {
+        printf(" %02x", cmt_buff);
+        cmt_bit = 0;
+        cmt_buff = 0;
+    }
+
+    return;
+
+}
+
 void menuinit(void) {
 
     memcpy(font,fontrom,0x800);
@@ -1431,7 +1497,7 @@ static inline int16_t getkeycode(uint8_t modifier,uint8_t keycode) {
             return 0x100;
         }
 
-        jr200code=jr200usbcode[keycode*5];
+        jr200code=jr200usbcode[keycode*6];
 
         // Auto repeat control (SHIT+CTRL+0/1)
 
@@ -1454,28 +1520,29 @@ static inline int16_t getkeycode(uint8_t modifier,uint8_t keycode) {
 
         return -1;
 
-    } else if (modifier&0x44) { // ALT=>Graph
-
-        jr200code=jr200usbcode[keycode*5+4];
-
-        if(jr200code!=0) return jr200code;
-        return -1;
-
     } else {
 
-        if(key_kana) {
+        if(key_graph) {
             if(modifier&0x22) {
-                jr200code=jr200usbcode[keycode*5+3];
+                jr200code=jr200usbcode[keycode*6+5];
             } else {
-                jr200code=jr200usbcode[keycode*5+2];
+                jr200code=jr200usbcode[keycode*6+4];
+            }
+            if(jr200code!=0) return jr200code;
+            return -1;
+        } else if(key_kana) {
+            if(modifier&0x22) {
+                jr200code=jr200usbcode[keycode*6+3];
+            } else {
+                jr200code=jr200usbcode[keycode*6+2];
             }
             if(jr200code!=0) return jr200code;
             return -1;
         } else {
             if(modifier&0x22) {
-                jr200code=jr200usbcode[keycode*5+1];
+                jr200code=jr200usbcode[keycode*6+1];
             } else {
-                jr200code=jr200usbcode[keycode*5];
+                jr200code=jr200usbcode[keycode*6];
             }
 
             if(jr200code==0) return -1;
@@ -1549,11 +1616,8 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
                     keyboard_cycles=cpu_cycles;
                     joystick_count=0xff;
 
-//        printf("[MK:%d,%d]",fm7code,main_cpu.cc.i);
-
                     if(key_repeat_flag) {
-                        key_repeat_count=total_scanline;
-  printf("[KR:%d]",key_repeat_count);                      
+                        key_repeat_count=total_scanline;                    
                     }
 
                 }
@@ -1583,15 +1647,23 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
 
                 if(keypressed==0x88) {
                         key_kana=1;
+                        key_graph=0;
+//                    process_kbd_leds();
+                }
+
+                // Henkan (Graph)
+                if(keypressed==0x8a) {
+                    key_kana=0;
+                    key_graph=1;
 //                    process_kbd_leds();
                 }
 
                 // Caps
                 if(keypressed==0x39) {
                     key_kana=0;
-
+                    key_graph=0;
 //                    process_kbd_leds();
-            }
+                }
 
                 // Break
 
@@ -1684,7 +1756,7 @@ uint8_t subcpu_read() {
                 return keycode;
             }
 
-printf("[KC:%x]",jr200keypressed);
+//printf("[KC:%x]",jr200keypressed);
 
             return jr200keypressed;
 
@@ -1879,7 +1951,25 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
                     via_reg[3]=bdat;
                     return;
 
+                case 7: // CMT/SIO control
+
+                    if(bdat&0x40) {
+                        tape_ready=1;
+                        printf("[CMT:ON]");
+                    } else {
+                        tape_ready=0;
+                        printf("[CMT:OFF]");
+                    }
+
+                    via_reg[7]=bdat;
+                    return;
+
                 case 0xd:   // CMT data
+
+                    printf("[%02x]",bdat);
+                    tapeout(bdat);
+
+
 
                     return;
 
@@ -2012,7 +2102,16 @@ unsigned char cpu_readmem16(unsigned short addr) { // to allow for memory-mapped
                 case 1:     // Sub CPU Read
                     return subcpu_read();
 
+                case 7:
 
+    printf("[%d]",tape_cycles);
+
+                    return 0;
+
+//                    return tapein();
+
+                case 0xc:   // Serial status
+                    return 0x20;
 
                 case 0x1c:  // IRQ status 1
 
@@ -2749,7 +2848,8 @@ int main() {
                         menuprint=0;
                     
                         init_emulator();
-//                        z80_power(&cpu,true);
+
+                        m6800_reset();
 
                     }
 
@@ -2762,8 +2862,7 @@ int main() {
 
                         init_emulator();
 
-//                        z80_instant_reset(&cpu);
-//                        z80_power(&cpu,true);
+                        m6800_reset();
 
                     }
 

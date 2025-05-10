@@ -1,6 +1,7 @@
 # Matsushita JR-200 Emulator for Raspberry Pi Pico
 
 # WORK IN PROGRESS
+現在作成中のため、ここに書かれた機能のうち未実装の物があります。
 
 ---
 # 概要
@@ -13,8 +14,6 @@
 - テープ
 - Joypad
 
-
-
 ---
 # 配線
 
@@ -22,15 +21,11 @@ Pico と VGA コネクタやブザー/スピーカーなどを以下のように
 
 - GPIO0 VGA:H-SYNC
 - GPIO1 VGA:V-SYNC
-- GPIO2 VGA:Blue0 (330 Ohm)
-- GPIO3 VGA:Blue1 (680 Ohm)
-- GPIO4 VGA:Red0 (330 Ohm)
-- GPIO5 VGA:Red1 (680 Ohm)
-- GPIO6 VGA:Red2 (1.2K Ohm)
-- GPIO7 VGA:Green0 (330 Ohm)
-- GPIO8 VGA:Green1 (680 Ohm)
-- GPIO9 VGA:Green2 (1.2K Ohm)
-- GPIO10 Audio
+- GPIO2 VGA:Blue  (330 Ohm)
+- GPIO3 VGA:Red   (330 Ohm)
+- GPIO4 VGA:Green (330 Ohm)
+
+- GPIO6 Audio
 
 このほかに VGA、Audio の　GND に Pico の　GND を接続してください。
 
@@ -74,13 +69,13 @@ $ picotool load -v -x font.rom -t bin -o 0x1003C000
 Pico の USB 端子に、OTG ケーブルなどを介して USB キーボードを接続します。
 USB キーボードに存在しないキーは以下のように割り当てています。
 
-- STOP   → Pause/Break
-- SELECT → ScrollLock
-- カナ　　→ カタカナ・ひらがな
-- GRAPH　→ ALT
+- RubOut → Backspace
+- 英数    → CapsLock
+- カナ    → カタカナ・ひらがな
+- GRAPH  → 前候補
 
 また F12 でメニュー画面に移ります。
-ROM ファイルや テープイメージの操作ができます。
+テープイメージの操作ができます。
 
 ---
 # Joystick
