@@ -10,7 +10,7 @@ pico_generate_pio_header(jr200emulator ${CMAKE_CURRENT_LIST_DIR}/rgb.pio)
 # Make sure TinyUSB can find tusb_config.h
 target_include_directories(jr200emulator PUBLIC ${CMAKE_CURRENT_LIST_DIR})
 
-target_sources(jr200emulator PRIVATE jr200emulator.c m6800.c hid_app.c joystick.c hidparser/hidparser.c vga16_graphics.c lfs.c lfs_util.c fdc.c)
+target_sources(jr200emulator PRIVATE jr200emulator.c m6800.c hid_app.c joystick.c hidparser/hidparser.c vga16_graphics.c lfs.c lfs_util.c)
 
 pico_enable_stdio_usb(jr200emulator 0)
 pico_enable_stdio_uart(jr200emulator 1)

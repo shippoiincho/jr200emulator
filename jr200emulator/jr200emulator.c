@@ -3,14 +3,9 @@
 //  GP0: HSYNC
 //  GP1: VSYNC
 //  GP2: Blue0
-//  GP3: Blue1
-//  GP4: Red0
-//  GP5: Red1
-//  GP6: Red2
-//  GP7: Green0
-//  GP8: Green1
-//  GP9: Green2
-//  GP10: Audio
+//  GP3: Red0
+//  GP4: Green0
+//  GP6: Audio
 
 #define HW_FLASH_STORAGE_MEGABYTES 2
 
@@ -42,12 +37,10 @@
 
 #include "jr200keymap.h"
 
-
 #include "jr200misc.h"
 #include "jr200rom.h"
 
 #include "lfs.h"
-#include "fdc.h"
 
 // VGAout configuration
 
@@ -88,7 +81,7 @@ uint8_t mainram[0x10000];
 uint8_t via_reg[0x20];
 uint16_t via_timercount[6];
 uint16_t via_prescalecount[6];
-uint16_t via_relolad[6];
+uint16_t via_reload[6];
 
 // Video
 uint8_t menuram[0x1000];
@@ -123,13 +116,17 @@ uint32_t key_basic_bytes=0;
 uint32_t lastmodifier=0;
 uint32_t jr200keypressed=0;
 
-// BEEP & PSG
+// BEEP & SOUND
 
 uint32_t beep_enable=0;
 uint32_t pwm_slice_num;
 volatile uint32_t sound_tick=0;
 
-
+uint32_t psg_osc_interval[4];
+uint32_t psg_osc_counter[4];
+uint32_t psg_noteon[4];
+//uint32_t psg_master_clock = 2000000;    // ???
+uint16_t psg_master_volume = 0;
 
 //#define SAMPLING_FREQ 44100    
 #define SAMPLING_FREQ 22050
@@ -145,16 +142,15 @@ uint32_t tape_count=0;
 
 uint32_t tape_read_wait=0;
 uint32_t tape_leader=0;
-uint32_t tape_autoclose=0;          // Default value of TAPE autoclose
+uint32_t tape_autoclose=1;          // Default value of TAPE autoclose
 uint32_t tape_skip=0;               // Default value of TAPE load accelaration
 uint32_t tape_cycles;
 
-const uint32_t tape_waits[] = { 650 ,1300 , 325 , 650 } ;  // Tape signal width
-const uint8_t tape_cas_header[] = { 0x1F, 0xA6, 0xDE , 0xBA , 0xCC , 0x13,  0x7D, 0x74  };
+const uint32_t tape_waits[] = { 270 ,1300 , 325 , 650 } ;  // Tape signal width
 
 #define TAPE_WAIT_WIDTH 20
 
-#define TAPE_THRESHOLD 20000000
+#define TAPE_THRESHOLD 2000000
 
 uint8_t uart_rx[32];
 uint8_t uart_nibble=0;
@@ -197,7 +193,6 @@ uint8_t __attribute__  ((aligned(sizeof(unsigned char *)*4096))) flash_buffer[40
 lfs_t lfs;
 lfs_file_t lfs_file,lfs_fd,lfs_cart1,lfs_cart2;
 
-#define FILE_THREHSOLD 20000000
 #define LFS_LS_FILES 12
 
 volatile uint32_t load_enabled=0;
@@ -206,7 +201,6 @@ volatile uint32_t save_enabled=0;
 
 unsigned char filename[16];
 unsigned char tape_filename[16];
-unsigned char fd_filename[16];
 
 static inline unsigned char tohex(int);
 static inline unsigned char fromhex(int);
@@ -862,9 +856,77 @@ static uint8_t tape_last_bits;
 
 uint8_t tapein() {
 
-    if(!tape_ready) return;
+    static uint8_t cmt_bit;
+    static uint8_t cmt_buff;
+    static uint8_t tape_phase,tape_bit_phase;
 
-    return 0;
+    if(!tape_ready) return 0;
+    if(load_enabled==0) return 0;
+
+    // Start
+
+    if ((cpu_cycles - tape_cycles) > TAPE_THRESHOLD ) {
+        cmt_buff = 0;
+        cmt_bit = 0;
+        tape_phase=1;
+        tape_bit_phase=0;
+        lfs_file_read(&lfs,&lfs_file,&cmt_buff,1);
+
+//printf(" {%02x}",cmt_buff);
+
+        tape_ptr++;
+        load_enabled=2;
+        tape_cycles=cpu_cycles;
+        return tape_phase;
+    }
+
+    //
+
+//    printf("[%d:%d]",tape_phase,cpu_cycles-tape_cycles);
+
+
+    if ((cpu_cycles - tape_cycles) < tape_waits[0] ) {
+        return tape_phase;
+    } else if  ((cpu_cycles - tape_cycles) < 2*tape_waits[0] ) {
+
+        // change phase if signal is 1
+
+        if(tape_bit_phase==0) {
+
+//            printf("[%d:%d]",tape_phase,cpu_cycles-tape_cycles);
+
+            if(cmt_buff&0x80) {
+                tape_phase++;
+                tape_phase%=2;
+            }
+            tape_bit_phase=1;
+        }
+
+        return tape_phase;
+    }
+
+    tape_bit_phase=0;
+
+//    printf("[%d:%d]",tape_phase,cpu_cycles-tape_cycles);
+
+    tape_cycles=cpu_cycles;
+
+    // load next bit
+
+    cmt_bit++;
+    if(cmt_bit==8) {
+        lfs_file_read(&lfs,&lfs_file,&cmt_buff,1);
+//        printf(" {%02x}",cmt_buff);
+        cmt_bit=0;
+        tape_ptr++;
+    } else {
+        cmt_buff<<=1;
+    }
+
+    tape_phase++;
+    tape_phase%=2;
+
+    return tape_phase;
 
 }
 
@@ -883,6 +945,8 @@ void tapeout(uint8_t data) {
     }
 
     tape_cycles=cpu_cycles;
+
+    // CMT IN OUT WORKS ONLY 2400 BAUD MODE
 
 #if 0    
     // 600 Baud
@@ -917,7 +981,13 @@ void tapeout(uint8_t data) {
         cmt_bit++;
     }
     if (cmt_bit == 8) {
-        printf(" %02x", cmt_buff);
+        if(save_enabled) {
+            save_enabled=2;
+            tape_ptr++;
+            lfs_file_write(&lfs,&lfs_file,&cmt_buff,1);
+        } else {
+            printf("%02x", cmt_buff);
+        }
         cmt_bit = 0;
         cmt_buff = 0;
     }
@@ -1225,36 +1295,6 @@ int enter_filename() {
 }
 
 //----------------------------------------------------------------------------------------------
-
-#if 0
-void psg_reset(int flag) {
-
-
-    psg_noise_seed = 12345;
-
-    if (flag == 0) {
-        for (int i = 0; i < 16; i++) {
-            psg_register[i] = 0;
-        }
-    } else {
-        for (int i = 0; i < 15; i++) {
-            psg_register[i] = 0;
-        }
-    }
-    psg_register[7] = 0xff;
-
-    psg_noise_interval = UINT32_MAX;
-    psg_envelope_interval = UINT32_MAX / 2 - 1;
-
-    for (int i = 0; i < 3; i++) {
-        psg_osc_interval[i] = UINT32_MAX;
-        psg_tone_on[i] = 0;
-        psg_noise_on[i] = 0;
-    }
-
-
-}
-#endif
 
 // Video OUT
  
@@ -1756,8 +1796,6 @@ uint8_t subcpu_read() {
                 return keycode;
             }
 
-//printf("[KC:%x]",jr200keypressed);
-
             return jr200keypressed;
 
         }
@@ -1803,9 +1841,10 @@ void settimer(uint16_t address,uint8_t data) {
                 break;
             }
 
+            via_timercount[number]=via_prescalecount[number]*via_reload[number];
+
             // check beep on 
         
-
             return;
 
         case 0x16:
@@ -1823,6 +1862,8 @@ void settimer(uint16_t address,uint8_t data) {
                 via_prescalecount[number]=1;
             }
 
+            via_timercount[number]=via_prescalecount[number]*via_reload[number];
+
             return;        
 
         case 0xf:
@@ -1830,13 +1871,22 @@ void settimer(uint16_t address,uint8_t data) {
         case 0x13:
         case 0x15:
 
+            number=(address-0xf)>>1;
+            via_reload[number]=data;
             return;
 
         case 0x17:
-        case 0x18:
         case 0x1a:
+
+            number=(address-0x17)/3+4;
+            via_reload[number]=data*256+via_reg[address+1];
+            return;
+
+        case 0x18:
         case 0x1b:
 
+            number=(address-0x18)/3+4;
+            via_reload[number]=via_reg[address-1]*256+data;
             return;
 
         default:
@@ -1867,7 +1917,6 @@ void exectimer(uint16_t cycles) {
             continue;
         }
 
-
         // check prescale
 
         if(via_timercount[i]>=cycles) {
@@ -1887,10 +1936,18 @@ void exectimer(uint16_t cycles) {
 
         // Reload
 
-        if(timer_status&0x20) {
-            via_timercount[i]+=via_prescalecount[i]*via_relolad[i];
-            via_timercount[i]-=cycles;
+        via_timercount[i]+=via_prescalecount[i]*via_reload[i];
+        via_timercount[i]-=cycles;
+        
+        // Set BORROW Flag
+        
+        if(i<5) {
+            via_reg[i*2+0xe]|=0x20;
+        } else {
+            via_reg[i*2+0xf]|=0x20;            
         }
+
+        
 
     }
 
@@ -1980,6 +2037,8 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
                 case 0x16:
                 case 0x19:
 
+//                printf("[TCW:%x:%x]",addr&0x1f,bdat);
+
                     via_reg[addr&0x1f]=bdat;
                     settimer(addr&0x1f,bdat);
                     return;
@@ -1992,6 +2051,8 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
                 case 0x18:
                 case 0x1a:
                 case 0x1b:
+
+                printf("[TRW:%x:%x]",addr&0x1f,bdat);
 
                     via_reg[addr&0x1f]=bdat;
                     settimer(addr&0x1f,bdat);
@@ -2023,69 +2084,11 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
 
     return;
 
-#if 0
-    case 4: // IO
-        switch (addr & 0xf) {
-        case 4:
-        case 6:
-            via_reg[4] = bdat;
-            via_reg[6] = bdat;
-            break;
-        case 5:
-        case 7:
-            via_reg[5] = bdat;
-            via_reg[7] = bdat;
-            via_reg[0xd] &= 0xbf; // clear T1IL
-            if ((via_reg[0xb] & 0xc0) == 0xc0) {
-                timer_control = via_reg[6] + (via_reg[7] << 8);
-                TIM4_PWMOut_Init(timer_control * 2, 107, timer_control);
-            }
-            break;
-        case 8:
-            via_reg[8] = bdat;
-            break;
-        case 9:
-            via_reg[9] = bdat;
-            via_reg[0xd] &= 0xdf; // clear T2IL
-            break;
-        case 0xa:    // CMT output to USART
-            if ((SysTick->CNT - last_usart_tx_systick)
-                    > SystemCoreClock / 100) {
-                cmt_buff = 0;
-                cmt_bit = 0;
-            }
-            last_usart_tx_systick = SysTick->CNT;
-            cmt_buff <<= 1;
-            if (bdat == 0xaa) {
-                cmt_buff++;
-            }
-            cmt_bit++;
-            if (cmt_bit == 8) {
-                printf("%02x", cmt_buff);
-                cmt_bit = 0;
-                cmt_buff = 0;
-            }
-
-            via_reg[0xd] |= 0x84; // set SR flag
-            break;
-        case 0xb:
-            if ((bdat & 0xc0) != 0xc0) {
-                TIM4_PWMOut_Init(0 107, 0);
-            }
-            via_reg[0xb] = bdat;
-            break;
-        default:
-            via_reg[addr & 0xf] = bdat;
-        }
-    }
-#endif
-
-
 }
 //
 unsigned char cpu_readmem16(unsigned short addr) { // to allow for memory-mapped I/O access
 
-    uint8_t bdat;
+    uint8_t bdat,timer_ch;
 
     if(addr<0xa000) {   // mainram
         return mainram[addr];
@@ -2104,20 +2107,56 @@ unsigned char cpu_readmem16(unsigned short addr) { // to allow for memory-mapped
 
                 case 7:
 
-    printf("[%d]",tape_cycles);
-
-                    return 0;
-
-//                    return tapein();
+                    if(tapein()) {
+                        return 0x80;
+                    } else {
+                        return 0;
+                    }
 
                 case 0xc:   // Serial status
                     return 0x20;
 
+                case 0xe:   // Timer control
+                case 0x10:
+                case 0x12:
+                case 0x14:
+                case 0x16:
+                case 0x19:
+
+                    timer_ch=addr&0x1f;
+
+//                    printf("[TC:%x:%x:%x]",timer_ch,via_reg[timer_ch],via_timercount[(timer_ch-0x1f)>>2]);
+                    bdat=via_reg[timer_ch];
+                    via_reg[timer_ch]&=0xdf;
+                    return bdat;
+
+                case 0xf:   // Timer count (8bits)
+                case 0x11:
+                case 0x13:
+                case 0x15:
+
+                    timer_ch=(addr&0x1f)-0xf;
+                    timer_ch>>1;
+
+//printf("[TR:%x,%x,%x",timer_ch,via_timercount[timer_ch],via_prescalecount[timer_ch]);
+
+                    return via_timercount[timer_ch]/via_prescalecount[timer_ch] ;
+
+                case 0x17:
+                case 0x1a:
+                    timer_ch=(addr&0x1f)-0x17;
+                    timer_ch/=3;
+                    timer_ch+=4;
+                    return (via_timercount[timer_ch]/via_prescalecount[timer_ch])>>8 ;
+
+                case 0x18:
+                case 0x1b:
+                    timer_ch=(addr&0x1f)-0x17;
+                    timer_ch/=3;
+                    timer_ch+=4;
+                    return (via_timercount[timer_ch]/via_prescalecount[timer_ch])&0xff ;
+    
                 case 0x1c:  // IRQ status 1
-
-//                printf("[PIA:%x/%x:%x]",addr&0x1f,via_reg[addr&0x1f],m6800_get_reg(M6800_PC));
-
-
 
                     if((key_irq)||(timer_enable_irq)) {           // TODO Timer irq
                         return via_reg[0x1c]|0x80;
@@ -2126,9 +2165,6 @@ unsigned char cpu_readmem16(unsigned short addr) { // to allow for memory-mapped
                     }
 
                 case 0x1d:  // IRQ status 2
-
-//                printf("[PIA:%x/%x:%x]",addr&0x1f,via_reg[addr&0x1f],m6800_get_reg(M6800_PC));
-
 
                     if((key_irq)||(timer_enable_irq)) {
                         bdat=via_reg[0x1d]|0x80;
@@ -2165,25 +2201,7 @@ unsigned char cpu_readmem16(unsigned short addr) { // to allow for memory-mapped
         return monitorrom[addr&0x1fff];
     }
 
-#if 0
-    case 4: // IO
-        switch (addr & 0xf) {
-        case 0:
-            return ((keymatrix[via_reg[1] & 0xf]) | (via_reg[0] & 0xc0));
-        case 4:
-            via_reg[0xf] &= 0xfd; // clear T1IL
-            return via_reg[4];
-        case 8:
-            via_reg[0xf] &= 0xfb; // clear T2IL
-            return via_reg[8];
-        default:
-            return via_reg[addr & 0xf];
-        }
-
-    }
-#endif
-
-    return 0xff;         // traps go above here
+    return 0xff;
 
 }
 
@@ -2341,29 +2359,11 @@ int main() {
     cpu_hsync=0;
     cpu_cycles=0;
 
-
-    lfs_handler=lfs;
-//    fdc_init(diskbuffer);
-
-    fd_drive_status[0]=0;
-
     // start emulator
     
     menumode=0;
 
     while(1) {
-
-#ifdef USE_OPLL
-        // Fill sound data on core 0
-        while(wave_in!=wave_out) {
-               int16_t wave=PSG_calc(msxpsg);
-               if(cart_enable[0]) { wave+=SCC_calc(msxscc1); }
-               if(cart_enable[1]) { wave+=SCC_calc(msxscc2); }
-               if(beep_enable) wave+=0x1000;
-               wave_buffer[wave_in++]=wave;
-               wave_in&=0x7;
-        }
-#endif
 
         if(menumode==0) { // Emulator mode
 
@@ -2388,30 +2388,25 @@ int main() {
         //     video_hsync=0;
         // }
 
-        // if((key_break==1)&&((iomem[6]&0x80)!=0)) {
-        //     //        printf("NMI:\n\r");
-        //             key_break=0;
-        //             iomem[12]|=0x80; // $ef80
-        //             ENTER_INTERRUPT("", 0xfffc);
-        //         }
-        //     }
+        // Break key
+        if(key_break_flag==1) {
+                    key_break_flag=0;
+                    ENTER_INTERRUPT("", 0xfffc);
+        }
 
+        // Keyboard IRQ
         if((key_irq==1)&&((cpu_cycles-keyboard_cycles)>KEYBOARD_WAIT)) {
-            // IRQ
-
                 if((m6800_get_reg(M6800_CC)&0x10)==0) {
                     key_irq=2;
-//                    printf("[KON]");
                     ENTER_INTERRUPT2("", 0xfff8);
                 }
         }
 
+        // Timer IRQ
         if((timer_enable_irq==1)) {
-            // IRQ
-
                 if((m6800_get_reg(M6800_CC)&0x10)==0) {
                     timer_enable_irq=0;
-                    printf("[TON]");
+//                    printf("[TON]");
                     ENTER_INTERRUPT2("", 0xfff8);
                 }
         }
@@ -2425,17 +2420,13 @@ int main() {
 
             if((key_repeat_flag)&&(key_repeat_count!=0)) {
                 if((total_scanline-key_repeat_count)==40*525) {
-
                     key_irq=1;
                     via_reg[0x1c]|=1;
                     keyboard_cycles=cpu_cycles;
-
                 } else if (((total_scanline-key_repeat_count)>40*525)&&((total_scanline-key_repeat_count)%(4*525)==0)) {
-
                     key_irq=1;
                     via_reg[0x1c]|=1;
                     keyboard_cycles=cpu_cycles;
-
                 }
             }
 
@@ -2507,113 +2498,15 @@ int main() {
                 video_print(str);
             }
 
+
+
             cursor_x=3;
             cursor_y=8;
-
-            // if(cart_loaded[0]==0) {
-            //     video_print("Slot1: empty");
-            // } else {
-            //     sprintf(str,"Slot1: %8s",cart1_filename);
-            //     video_print(str);
-            // }
-
-            // cursor_x=4;
-            // cursor_y=9;
-
-            // if(cart_enable[0]) {
-            //      video_print("Cart:Enable");
-            // } else {
-            //      video_print("Cart:Disable");
-            // }
-
-            // cursor_x=4;
-            // cursor_y=10;
-
-            // switch(carttype[0]) {
-            //     case 0:
-            //         video_print("Type:Plain");
-            //         break;  
-            //     case 1:
-            //         video_print("Type:ASCII 8K");
-            //         break;  
-            //     case 2:
-            //         video_print("Type:ASCII 16K");
-            //         break;  
-            //     case 3:
-            //         video_print("Type:Konami");
-            //         break;  
-            //     case 4:
-            //         video_print("Type:KonamiSCC");
-            //         break;  
-            //     default:
-            //         video_print("Type:Unknown");
-            //         break;  
-            // }
-
-            // cursor_x=3;
-            // cursor_y=11;
-
-            // if(cart_loaded[1]==0) {
-            //     video_print("Slot2: empty");
-            // } else {
-            //     sprintf(str,"Slot2: %8s",cart2_filename);
-            //     video_print(str);
-            // }
-
-            // cursor_x=4;
-            // cursor_y=12;
-
-            // if(cart_enable[1]) {
-            //      video_print("Cart:Enable");
-            // } else {
-            //      video_print("Cart:Disable");
-            // }
-
-            // cursor_x=4;
-            // cursor_y=13;
-
-            // switch(carttype[1]) {
-            //     case 0:
-            //         video_print("Type:Plain");
-            //         break;  
-            //     case 1:
-            //         video_print("Type:ASCII 8K");
-            //         break;  
-            //     case 2:
-            //         video_print("Type:ASCII 16K");
-            //         break;  
-            //     case 3:
-            //         video_print("Type:Konami");
-            //         break;  
-            //     case 4:
-            //         video_print("Type:KonamiSCC");
-            //         break;  
-            //     default:
-            //         video_print("Type:Unknown");
-            //         break;  
-            // }
-
-            cursor_x=3;
-            cursor_y=14;
-#ifdef USE_FDC
-            if(fd_drive_status[0]==0) {
-                video_print("FD: empty");
-            } else {
-                sprintf(str,"FD: %8s",fd_filename);
-                video_print(str);
-            }
-#endif
-//  TODO:
-//    CHANGE Kana type
-
-
-            cursor_x=3;
-            cursor_y=15;
 
             video_print("DELETE File");
 
             cursor_x=3;
-            cursor_y=16;
+            cursor_y=9;
 
             if(cpu_boost) {
                  video_print("CPU:Fast");
@@ -2622,22 +2515,12 @@ int main() {
             }
 
             cursor_x=3;
-            cursor_y=17;
-
-            // if(key_kana_jis) {
-            //      video_print("KANA:JIS");
-            // } else {
-            //      video_print("KANA:aiueo");
-            // }
-
-
-            cursor_x=3;
-            cursor_y=18;
+            cursor_y=10;
 
             video_print("Reset");
 
             cursor_x=3;
-            cursor_y=19;
+            cursor_y=11;
 
             video_print("PowerCycle");
 
@@ -2670,9 +2553,6 @@ int main() {
                     video_print("  ");
                     keypressed=0;
                     if(menuitem>0) menuitem--;
-#ifndef USE_FDC
-                    if(menuitem==8) menuitem--;
-#endif
                 }
 
                 if(keypressed==0x51) { // Down
@@ -2681,9 +2561,6 @@ int main() {
                     video_print("  ");
                     keypressed=0;
                     if(menuitem<13) menuitem++; 
-#ifndef USE_FDC
-                    if(menuitem==8) menuitem++;
-#endif
                 }
 
                 if(keypressed==0x28) {  // Enter
@@ -2700,6 +2577,7 @@ int main() {
                                 save_enabled=1;
                                 // tape_phase=0;
                                 tape_ptr=0;
+                                tape_cycles=0;
                                 // tape_count=0;
                             }
 
@@ -2721,6 +2599,7 @@ int main() {
                                 load_enabled=1;
                                 // tape_phase=0;
                                 tape_ptr=0;
+                                tape_cycles=0;
                                 // tape_count=0;
 //                                file_cycle=cpu.PC;
                             }
@@ -2731,92 +2610,7 @@ int main() {
                         menuprint=0;
                     }
 
-                    // if(menuitem==2) { // Slot Load
-
-                    //     uint32_t res=file_selector();
-
-                    //     if(res==0) {
-                    //         memcpy(cart1_filename,filename,16);
-                    //         lfs_file_open(&lfs,&lfs_cart1,cart1_filename,LFS_O_RDONLY);
-                    //         if(cart_size_check(0)==0) {
-                    //             if(cart_compare(0)!=0) {
-                    //                 cart_write(0);
-                    //             }
-                    //             cart_type_checker(0);
-                    //             cart_loaded[0]=1;
-                    //         } else {
-                    //             cart_loaded[0]=0;
-                    //         }
-                    //         lfs_file_close(&lfs,&lfs_cart1);
-                    //     }
-
-                    //     menuprint=0;
-                    // }
-
-                    // if(menuitem==3) { // Cart enable/disable
-                    //     cart_enable[0]++;
-                    //     if(cart_enable[0]>1) cart_enable[0]=0;
-                    //     menuprint=0;
-                    // }
-
-                    // if(menuitem==4) { // Cart enable/disable
-                    //     carttype[0]++;
-                    //     if(carttype[0]>4) carttype[0]=0;
-                    //     menuprint=0;
-                    // }
-
-                    // if(menuitem==5) { // Slot2 Load
-
-                    //     uint32_t res=file_selector();
-
-                    //     if(res==0) {
-                    //         memcpy(cart2_filename,filename,16);
-                    //         lfs_file_open(&lfs,&lfs_cart2,cart2_filename,LFS_O_RDONLY);
-                    //         if(cart_size_check(1)==0) {
-                    //             if(cart_compare(1)!=0) {
-                    //                 cart_write(1);
-                    //             }
-                    //             cart_type_checker(1);
-                    //             cart_loaded[1]=1;
-                    //         }else {
-                    //             cart_loaded[1]=0;
-                    //         }
-                    //         lfs_file_close(&lfs,&lfs_cart2);
-                    //     }
-
-                    //     menuprint=0;
-                    // }
-
-                    // if(menuitem==6) { // Cart enable/disable
-                    //     cart_enable[1]++;
-                    //     if(cart_enable[1]>1) cart_enable[1]=0;
-                    //     menuprint=0;
-                    // }
-
-                    // if(menuitem==7) { // Cart enable/disable
-                    //     carttype[1]++;
-                    //     if(carttype[1]>4) carttype[1]=0;
-                    //     menuprint=0;
-                    // }
-
-                    if(menuitem==8) {  // FD
-                        if(fd_drive_status[0]==0) {
-
-                            uint32_t res=file_selector();
-
-                            if(res==0) {
-                                memcpy(fd_filename,filename,16);
-                                lfs_file_open(&lfs,&fd_drive[0],fd_filename,LFS_O_RDONLY);
-                                fdc_check(0);
-                            }
-                        } else {
-                            lfs_file_close(&lfs,&fd_drive[0]);
-                            fd_drive_status[0]=0;
-                        }
-                        menuprint=0;
-                    }
-
-                    if(menuitem==9) { // Delete
+                    if(menuitem==2) { // Delete
 
                         if((load_enabled==0)&&(save_enabled==0)) {
                             uint32_t res=enter_filename();
@@ -2830,20 +2624,13 @@ int main() {
 
                     }
 
-                    if(menuitem==10) { 
+                    if(menuitem==3) { 
                         cpu_boost++;
                         if(cpu_boost>1) cpu_boost=0;
                         menuprint=0;
                     }
 
-
-                    // if(menuitem==11) { 
-                    //     key_kana_jis++;
-                    //     if(key_kana_jis>1) key_kana_jis=0;
-                    //     menuprint=0;
-                    // }
-
-                    if(menuitem==12) { // Reset
+                    if(menuitem==4) { // Reset
                         menumode=0;
                         menuprint=0;
                     
@@ -2853,7 +2640,7 @@ int main() {
 
                     }
 
-                    if(menuitem==13) { // PowerCycle
+                    if(menuitem==5) { // PowerCycle
                         menumode=0;
                         menuprint=0;
 
