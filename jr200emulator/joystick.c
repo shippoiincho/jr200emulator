@@ -172,14 +172,14 @@ void parse_gamepad_report(uint8_t const *report, uint16_t len , uint8_t instance
 		//of course you can use GPIO here for hiven buttons
 		uint8_t value = current.value;
 
-        gamepad_info=0x3f;
+        gamepad_info=0xff;
 
-        if(value&32) {gamepad_info&=0x1f;};   // TRIG B
-        if(value&16) {gamepad_info&=0x2f;};   // TRIG A
-        if(value&8) {gamepad_info&=0x3b;};   // Left
-        if(value&4) {gamepad_info&=0x3d;};   // Down
-        if(value&2) {gamepad_info&=0x37;};  // Right
-        if(value&1) {gamepad_info&=0x3e;};  // Up
+//        if(value&32) {gamepad_info&=0x1f;};   // TRIG B
+        if(value&16) {gamepad_info&=0xef;};   // TRIG A
+        if(value&8) {gamepad_info&=0xfb;};   // Left
+        if(value&4) {gamepad_info&=0xfd;};   // Down
+        if(value&2) {gamepad_info&=0xf7;};  // Right
+        if(value&1) {gamepad_info&=0xfe;};  // Up
 
 		// if (!value)
 		// {

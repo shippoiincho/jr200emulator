@@ -104,6 +104,7 @@ uint32_t key_graph=0;        // Kana Keyboard select
 
 uint32_t key_irq=0;
 uint32_t key_break_flag=0;
+uint32_t key_break_enable=1;
 #define KEYBOARD_WAIT   32
 uint32_t keyboard_cycles;
 uint32_t joystick_count=0;      // SUBCPU command count
@@ -1001,6 +1002,19 @@ static inline int16_t getkeycode(uint8_t modifier,uint8_t keycode) {
 
     if(modifier&0x11) {  // Control
 
+        // Enable/Disable Break key
+
+        if(modifier&0x22) { // Shift
+            if(keycode==0x31) {  // ']'
+                key_break_enable=0;
+                return -1;
+            }  
+            if(keycode==0x34) {  // ':'
+                key_break_enable=1;
+                return -1;
+            }  
+        }
+
         if((key_basic_flag==0)&&(jr200basiccode[keycode][0]!=0)) {  // BASIC keyword input
 
             return 0x100;
@@ -1158,7 +1172,7 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
 
                 // Break
 
-                if(keypressed==0x48) {
+                if((keypressed==0x48)&&(key_break_enable)) {
                     key_break_flag=1;             
                 }
 
@@ -1227,8 +1241,15 @@ uint8_t subcpu_read() {
 
         if(joystick_count<=2) {
 
-        printf("[JS:%x]",joystick_count);
+//        printf("[JS:%x]",joystick_count);
         joystick_count++;
+
+            if(joystick_count==1) {
+                return jr200keypressed;
+            }
+            if(joystick_count==2) {
+                return gamepad_info;
+            }
 
             return 0xff;
 
@@ -1738,13 +1759,10 @@ unsigned char cpu_readmem16(unsigned short addr) { // to allow for memory-mapped
 void init_emulator(void) {
 //  setup emulator 
 
-    for(int i=0;i<11;i++) {
-        keymap[i]=0xff;
-    }
-
     key_kana=0;
     key_caps=0;
     key_graph=0;
+    key_break_enable=1;
 
     tape_ready=0;
     tape_leader=0;
@@ -1753,7 +1771,7 @@ void init_emulator(void) {
 
     subcpu_ktest=0;
 
-    gamepad_info=0x3f;
+    gamepad_info=0xff;
 
     // Beep freq
 
