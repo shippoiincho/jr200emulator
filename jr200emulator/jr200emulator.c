@@ -112,6 +112,7 @@ uint32_t key_repeat_count=0;
 uint32_t key_basic_flag=0;      // TYPE BASIC 
 uint32_t key_basic_code=0;
 uint32_t key_basic_bytes=0;
+uint32_t key_click=0;
 
 uint32_t lastmodifier=0;
 uint32_t jr200keypressed=0;
@@ -124,13 +125,14 @@ volatile uint32_t sound_tick=0;
 
 uint32_t psg_osc_interval[4];
 uint32_t psg_osc_counter[4];
-uint32_t psg_noteon[4];
+uint32_t psg_tone_on[4];
 //uint32_t psg_master_clock = 2000000;    // ???
 uint16_t psg_master_volume = 0;
 
 //#define SAMPLING_FREQ 44100    
 #define SAMPLING_FREQ 22050
 #define TIME_UNIT 100000000                           // Oscillator calculation resolution = 10nsec
+#define TIMER_INTERVAL (TIME_UNIT/745000)
 #define SAMPLING_INTERVAL (TIME_UNIT/SAMPLING_FREQ) 
 
 // Tape
@@ -279,140 +281,20 @@ void __not_in_flash_func(hsync_handler)(void) {
 // BEEP and PSG emulation
 
 bool __not_in_flash_func(sound_handler)(struct repeating_timer *t) {
-#if 0
+
     uint16_t timer_diffs;
     uint32_t pon_count;
     uint16_t master_volume;
 
-    uint8_t tone_output[3], noise_output[3], envelope_volume;
+    uint8_t tone_output[4];
+    uint8_t tone_count;
 
     pwm_set_chan_level(pwm_slice_num,PWM_CHAN_A,psg_master_volume);
 
     // PSG
 
     master_volume = 0;
-
-    // Run Noise generator
-
-        psg_noise_counter += SAMPLING_INTERVAL;
-        if (psg_noise_counter > psg_noise_interval) {
-            psg_noise_seed = (psg_noise_seed >> 1)
-                    | (((psg_noise_seed << 14) ^ (psg_noise_seed << 16))
-                            & 0x10000);
-            psg_noise_output = psg_noise_seed & 1;
-            psg_noise_counter -= psg_noise_interval;
-        }
-        if (psg_noise_output != 0) {
-            noise_output[0] = psg_noise_on[0];
-            noise_output[1] = psg_noise_on[1];
-            noise_output[2] = psg_noise_on[2];
-        } else {
-            noise_output[0] = 0;
-            noise_output[1] = 0;
-            noise_output[2] = 0;
-        }
-
-    // Run Envelope
-
-        envelope_volume = 0;
-
-        switch (psg_register[13] & 0xf) {
-        case 0:
-        case 1:
-        case 2:
-        case 3:
-        case 9:
-            if (psg_envelope_counter < psg_envelope_interval * 32) {
-                envelope_volume = 31
-                        - psg_envelope_counter / psg_envelope_interval;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else {
-                envelope_volume = 0;
-            }
-            break;
-        case 4:
-        case 5:
-        case 6:
-        case 7:
-        case 15:
-            if (psg_envelope_counter < psg_envelope_interval * 32) {
-                envelope_volume = psg_envelope_counter
-                        / psg_envelope_interval;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else {
-                envelope_volume = 0;
-            }
-            break;
-        case 8:
-            if (psg_envelope_counter < psg_envelope_interval * 32) {
-                envelope_volume = 31
-                        - psg_envelope_counter / psg_envelope_interval;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else {
-                psg_envelope_counter -= psg_envelope_interval * 32;
-                envelope_volume = 31;
-            }
-            break;
-        case 10:
-            if (psg_envelope_counter < psg_envelope_interval * 32) {
-                envelope_volume = 31
-                        - psg_envelope_counter / psg_envelope_interval;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else if (psg_envelope_counter
-                    < psg_envelope_interval * 64) {
-                envelope_volume = psg_envelope_counter
-                        / psg_envelope_interval - 32;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else {
-                psg_envelope_counter -= psg_envelope_interval * 64;
-                envelope_volume = 31;
-            }
-            break;
-        case 11:
-            if (psg_envelope_counter < psg_envelope_interval * 32) {
-                envelope_volume = 31
-                        - psg_envelope_counter / psg_envelope_interval;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else {
-                envelope_volume = 31;
-            }
-            break;
-        case 12:
-            if (psg_envelope_counter < psg_envelope_interval * 32) {
-                envelope_volume = psg_envelope_counter
-                        / psg_envelope_interval;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else {
-                psg_envelope_counter -= psg_envelope_interval * 32;
-                envelope_volume = 0;
-            }
-            break;
-        case 13:
-            if (psg_envelope_counter < psg_envelope_interval * 32) {
-                envelope_volume = psg_envelope_counter
-                        / psg_envelope_interval;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else {
-                envelope_volume = 31;
-            }
-            break;
-        case 14:
-            if (psg_envelope_counter < psg_envelope_interval * 32) {
-                envelope_volume = psg_envelope_counter
-                        / psg_envelope_interval;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else if (psg_envelope_counter
-                    < psg_envelope_interval * 64) {
-                envelope_volume = 63
-                        - psg_envelope_counter / psg_envelope_interval;
-                psg_envelope_counter += SAMPLING_INTERVAL;
-            } else {
-                psg_envelope_counter -= psg_envelope_interval * 64;
-                envelope_volume = 0;
-            }
-            break;
-        }
-
+    tone_count=0;
 
     // Run Oscillator
 
@@ -432,427 +314,27 @@ bool __not_in_flash_func(sound_handler)(struct repeating_timer *t) {
 
     master_volume = 0;
 
-        for (int j = 0; j < 3; j++) {
-            if ((tone_output[j] + noise_output[j]) > 0) {
-                if ((psg_register[j + 8] & 0x10) == 0) {
-                    master_volume += psg_volume[(psg_register[j + 8 ]
-                            & 0xf) * 2 + 1];
-                } else {
-                    master_volume += psg_volume[envelope_volume];
-                }
-            }
+    for (int j = 0; j < 4; j++) {
+        if (tone_output[j]) {
+            master_volume += 255;
         }
+    }
 
-    psg_master_volume = master_volume / 4 + beep_enable*63 ;    // Add beep
+    tone_count=0;
+    for (int j = 0; j < 4; j++) {
+        if (psg_tone_on[j]) {
+            tone_count++;
+        }
+    }
+
+
+    psg_master_volume = master_volume / tone_count ;
 
     if (psg_master_volume > 255)
         psg_master_volume = 255;
-#endif
+
     return true;
 }
-
-// PSG virtual registers
-
-#if 0
-void psg_write(uint32_t data) {
-
-    uint32_t channel,freqdiv,freq;
-
-    psg_register_number=ioport[0xa0];
-
-    if(psg_register_number>15) return;
-
-    psg_register[psg_register_number]=data;
-
-
-    // printf("[PSG:%x,%x]",psg_register_number,data);
-
-    switch(psg_register_number&0xf) {
-        case 0:
-        case 1:
-            if((psg_register[0]==0)&&(psg_register[1]==0)) {
-                psg_osc_interval[0]=UINT32_MAX;
-                break;
-            }
-            freq = psg_master_clock / ( psg_register[0] + ((psg_register[1]&0x0f)<<8) );
-            freq >>= 4;
-            if(freq!=0) {
-                psg_osc_interval[0] = TIME_UNIT / freq;
-                psg_osc_counter[0]=0;
-            } else {
-                psg_osc_interval[0]=UINT32_MAX;
-            }
-            break;
-        case 2:
-        case 3:
-            if((psg_register[2]==0)&&(psg_register[3]==0)) {
-                psg_osc_interval[1]=UINT32_MAX;
-                break;
-            }
-            freq = psg_master_clock / ( psg_register[2] + ((psg_register[3]&0x0f)<<8) );
-            freq >>= 4;
-            if(freq!=0) {
-                psg_osc_interval[1] = TIME_UNIT / freq;
-                psg_osc_counter[1]=0;
-            } else {
-                psg_osc_interval[1]=UINT32_MAX;
-            }
-            break;
-        case 4:
-        case 5:
-            if((psg_register[4]==0)&&(psg_register[5]==0)) {
-                psg_osc_interval[2]=UINT32_MAX;
-                break;
-            }
-            freq = psg_master_clock / ( psg_register[4] + ((psg_register[5]&0x0f)<<8) );
-            freq >>= 4;
-            if(freq!=0) {
-                psg_osc_interval[2] = TIME_UNIT / freq;
-                psg_osc_counter[2]=0;
-                } else {
-                    psg_osc_interval[2]=UINT32_MAX;
-                }
-            break;
-        case 6:
-            if((psg_register[6]==0)&&(psg_register[7]==0)) {
-                psg_noise_interval=UINT32_MAX;
-                break;
-            }
-            freq = psg_master_clock / ( psg_register[6] & 0x1f );
-            freq >>= 4;
-            if(freq!=0) {
-                psg_noise_interval = TIME_UNIT / freq;
-                psg_noise_counter = 0;
-            } else {
-                psg_noise_interval=UINT32_MAX;
-            }
-            break;
-        case 7:
-            psg_tone_on[0]=((psg_register[7]&1)==0?1:0);
-            psg_tone_on[1]=((psg_register[7]&2)==0?1:0);
-            psg_tone_on[2]=((psg_register[7]&4)==0?1:0);
-            psg_noise_on[0]=((psg_register[7]&8)==0?1:0);
-            psg_noise_on[1]=((psg_register[7]&16)==0?1:0);
-            psg_noise_on[2]=((psg_register[7]&32)==0?1:0);
-            break;
-        case 0xb:
-        case 0xc:
-            freq = psg_master_clock / ( psg_register[0xb] + (psg_register[0xc]<<8) );
-            if(freq!=0) {
-                psg_envelope_interval= TIME_UNIT / freq;
-                psg_envelope_interval<<=5;
-            } else {
-                psg_envelope_interval=UINT32_MAX/2-1;
-            }
-            break;
-        case 0xd:
-            psg_envelope_counter=0;
-            break;
-//                        case 0xf:
-//                        psg_reset(1,psg_no);
-    }
-}
-
-void __not_in_flash_func(uart_handler)(void) {
-
-    uint8_t ch;
-
-    if(uart_is_readable(uart0)) {
-        ch=uart_getc(uart0);
-        if(uart_count==0) {
-            uart_nibble=fromhex(ch)<<4;
-            uart_count++;
-        } else {
-            ch=fromhex(ch)+uart_nibble;
-            uart_count=0;
-
-            if(uart_read_ptr==uart_write_ptr+1) {  // buffer full
-                return;
-            }
-            if((uart_read_ptr==0)&&(uart_write_ptr==31)) {
-                return;
-            }
-
-            uart_rx[uart_write_ptr]=ch;
-            uart_write_ptr++;
-            if(uart_write_ptr>31) {
-                uart_write_ptr=0;
-            }
-        }
-    }
-
-}
-#endif
-
-
-#if 0
-
-uint8_t tapein() {
-
-static uint32_t tape_diff_cycles;
-static uint8_t tape_bits,tape_file_data;
-static uint8_t tape_half_bit,tape_signal;
-static uint16_t tape_data;
-static uint16_t tape_byte;
-static uint32_t tape_header_bits;
-static uint8_t tape_baud;
-static uint8_t tape_last_bits;
-
-    if(tape_ready==0) {
-        return 0;
-    }
-
-    if(load_enabled==0) {
-        return 0;
-    }
-
-    load_enabled=2;
-
-    tape_diff_cycles=cpu_cycles-tape_cycles;
-//    tape_cycles=cpu_cycles;
-//    tape_last_bits=data;
-
-    if(tape_phase%2) {
-
-        if(tape_diff_cycles<tape_waits[(tape_last_bits+1)%2]) {
-            return tape_signal;
-        }
-
-//    printf("[D:%d,%d,%d,%d,%x]",tape_diff_cycles,tape_signal,tape_last_bits,tape_bits,tape_file_data);
-
-        tape_cycles=cpu_cycles;
-
-        if(tape_bits==0) { // start bit
-            if(tape_signal) {   // 1 -> 0
-                tape_signal=0;
-                tape_bits++;
-                tape_half_bit=0;
-                tape_last_bits=(tape_file_data&1);
-                return 0;
-            } else {            // 0 -> 1
-                tape_signal=1;
-                return 1;
-            }
-        }
-        if(tape_bits<9) {
-            if(tape_signal) {   // 1 -> 0
-                tape_signal=0;
-                if(tape_last_bits) {
-                    if(tape_half_bit==0) {
-                        tape_half_bit++;
-                        return 0;
-                    }
-                }
-                if(tape_bits<8) {
-                    tape_last_bits=tape_file_data>>tape_bits;
-                    tape_last_bits&=1;
-                    tape_bits++;
-                    tape_half_bit=0;
-                    return 0;
-                } else {
-                    tape_last_bits=1;
-                    tape_bits++;
-                    tape_half_bit=0;
-                    return 0;                    
-                }
-                return 0;
-            } else {            // 0 -> 1
-                tape_signal=1;
-                return 1;
-            }
-        }
-
-            if(tape_signal) {   // 1 -> 0
-
-                if(tape_last_bits) {
-                    if(tape_half_bit==0) {
-                        tape_half_bit++;
-                        tape_signal=0;
-                        return 0;
-                    }
-                }
-                if(tape_bits==9) {
-                    tape_last_bits=1;
-                    tape_bits++;
-                    tape_signal=0;
-                    tape_half_bit=0;
-                    return 0;
-                } else {
-                    tape_last_bits=0;
-                    tape_bits=0;
-                    tape_signal=0;
-                    tape_half_bit=0;
-                    lfs_file_read(&lfs,&lfs_file,&tape_file_data,1);
-                    tape_data=tape_file_data;
-                    tape_ptr++;
-
-                    return 0;                    
-                }
-            } else {            // 0 -> 1
-                tape_signal=1;
-                return 1;
-            }
-        
-    } else {
-        // Header 
-        // Return '1' 2400baud
-
-        if((tape_diff_cycles)>10000L) { // First 'h'
-            tape_cycles=cpu_cycles;
-            tape_signal=1;
-            tape_header_bits=0;
-            return 1;
-        }
-        if(tape_diff_cycles>tape_waits[0]) {
-
-//    printf("[H:%d,%d,%d,%d]",tape_diff_cycles,tape_signal,tape_header_bits,tape_phase);
-
-            tape_cycles=cpu_cycles;
-            if(tape_signal) {
-                tape_signal=0;
-                tape_header_bits++;
-                if(tape_header_bits>8000) {
-                    // Skip CAS Header
-                    for(int i=0;i<9;i++) {
-                        lfs_file_read(&lfs,&lfs_file,&tape_file_data,1);
-                    }
-                    tape_bits=0;
-                    tape_ptr++;
-                    tape_last_bits=0;
-                    tape_phase++;
-                    tape_header_bits=0;
-                }
-                return 0;
-            } else {
-                tape_signal=1;
-                return 1;
-            }
-        } else {
-            return tape_signal;
-        }
-    }
-
-
-#if 0
-    static uint8_t tapebyte;
-
-
-
-    lfs_file_read(&lfs,&lfs_file,&tapebyte,1);
-    tape_ptr++;
-
-    if(tapebyte==0xd3) {
-        tape_leader++;
-    } else if (tape_leader) {
-        tape_leader++;
-        if(tape_leader>0x20) {
-            tape_leader=0;
-        }
-    }
-
-//    printf("(%02x)",tapebyte);
-
-    return tapebyte;
-#endif
-    return 0;
-
-}
-
-void tapeout(uint8_t data) {
-
-static uint32_t tape_diff_cycles;
-static uint8_t tape_bits,tape_file_data;
-static uint8_t tape_half_bit;
-static uint16_t tape_data;
-static uint16_t tape_byte;
-static uint8_t tape_baud;
-static uint8_t tape_last_bits;
-
-    if(tape_ready) {
-
-        if(tape_last_bits!=data) {
-
-            tape_diff_cycles=cpu_cycles-tape_cycles;
-            tape_cycles=cpu_cycles;
-            tape_last_bits=data;
-
-//            printf("[%d:%d]",data,tape_diff_cycles);
-
-            // Skip headers
-
-            if(tape_phase%2) {
-                if(data==0) {
-                    if((tape_diff_cycles>tape_waits[tape_baud]-TAPE_WAIT_WIDTH)&&(tape_diff_cycles<tape_waits[tape_baud]+TAPE_WAIT_WIDTH)) {
-                        tape_data=0;
-                        tape_half_bit=0; 
-  //                      printf("0");
-                    } else if((tape_diff_cycles>tape_waits[tape_baud-1]-TAPE_WAIT_WIDTH)&&(tape_diff_cycles<tape_waits[tape_baud-1]+TAPE_WAIT_WIDTH)) {
-                        if(tape_half_bit) {
-                            tape_data=0x8000;
-                            tape_half_bit=0;
-   //                         printf("1");
-                        } else {
-                            tape_half_bit=1;
-                            return;
-                        }
-                    } 
-                    tape_byte=(tape_byte>>1)|tape_data;
-                    tape_bits++;
-                    if(tape_bits==11) {
-                        if(save_enabled) {
-                            save_enabled=2;
-                            tape_file_data=(tape_byte>>6)&0xff;
-                            tape_ptr++;
-                            lfs_file_write(&lfs,&lfs_file,&tape_file_data,1);
-                        } else {
-                            printf("[%02x]",(tape_byte>>6)&0xff);
-                        }
-                        tape_bits=0;
-                        tape_byte=0;
-                    }
-                }                
-            } else {
-
-                if(data!=0) {
-                    if(tape_diff_cycles>10000L) {  // It is first H bit
-                        tape_baud=0;
-                        tape_bits=0;
-                        tape_byte=0;
-                    }
-                } 
-                if(data==0) {
-                    if(tape_baud==0) {  // Baud rate check  (header bit is always '1')
-                        if((tape_diff_cycles>tape_waits[0]-TAPE_WAIT_WIDTH)&&(tape_diff_cycles<tape_waits[0]+TAPE_WAIT_WIDTH)) {
-                            tape_baud=1;
-//printf("[1200]\n");
-                        } else {
-                            tape_baud=3;
-//printf("[2400]\n");                            
-                        }
-                    } else {
-                        if((tape_diff_cycles>tape_waits[tape_baud]-TAPE_WAIT_WIDTH)&&(tape_diff_cycles<tape_waits[tape_baud]+TAPE_WAIT_WIDTH)) {
-                        // first '0' bit = Statbit of Data section
-                            tape_bits=1;
-                            tape_byte=0;
-                            tape_phase++;
-                        // Write CAS Header
-
-                            lfs_file_write(&lfs,&lfs_file,tape_cas_header,8);
-
-                        }
-                    } 
-                }
-            }
-        }
-
-//        if(save_enabled) {
-//
-//        }
-    } 
-    
-}
-
-#endif
 
 uint8_t tapein() {
 
@@ -871,9 +353,6 @@ uint8_t tapein() {
         tape_phase=1;
         tape_bit_phase=0;
         lfs_file_read(&lfs,&lfs_file,&cmt_buff,1);
-
-//printf(" {%02x}",cmt_buff);
-
         tape_ptr++;
         load_enabled=2;
         tape_cycles=cpu_cycles;
@@ -882,9 +361,6 @@ uint8_t tapein() {
 
     //
 
-//    printf("[%d:%d]",tape_phase,cpu_cycles-tape_cycles);
-
-
     if ((cpu_cycles - tape_cycles) < tape_waits[0] ) {
         return tape_phase;
     } else if  ((cpu_cycles - tape_cycles) < 2*tape_waits[0] ) {
@@ -892,9 +368,6 @@ uint8_t tapein() {
         // change phase if signal is 1
 
         if(tape_bit_phase==0) {
-
-//            printf("[%d:%d]",tape_phase,cpu_cycles-tape_cycles);
-
             if(cmt_buff&0x80) {
                 tape_phase++;
                 tape_phase%=2;
@@ -906,9 +379,6 @@ uint8_t tapein() {
     }
 
     tape_bit_phase=0;
-
-//    printf("[%d:%d]",tape_phase,cpu_cycles-tape_cycles);
-
     tape_cycles=cpu_cycles;
 
     // load next bit
@@ -916,7 +386,6 @@ uint8_t tapein() {
     cmt_bit++;
     if(cmt_bit==8) {
         lfs_file_read(&lfs,&lfs_file,&cmt_buff,1);
-//        printf(" {%02x}",cmt_buff);
         cmt_bit=0;
         tape_ptr++;
     } else {
@@ -1514,17 +983,17 @@ static inline bool find_key_in_report(hid_keyboard_report_t const *report, uint8
   return false;
 }
 
-void process_kbd_leds(void) {
+// void process_kbd_leds(void) {
 
-    hid_led=0;
+//     hid_led=0;
 
-    if(key_caps) hid_led+=KEYBOARD_LED_CAPSLOCK;          // CAPS Lock
-    if(key_kana) hid_led+=KEYBOARD_LED_NUMLOCK;           // KANA -> Numlock
-    if((hid_dev_addr!=255)&&(hid_instance!=255)) {
-        tuh_hid_set_report(hid_dev_addr, hid_instance, 0, HID_REPORT_TYPE_OUTPUT, &hid_led, sizeof(hid_led));
-    }
+//     if(key_caps) hid_led+=KEYBOARD_LED_CAPSLOCK;          // CAPS Lock
+//     if(key_kana) hid_led+=KEYBOARD_LED_NUMLOCK;           // KANA -> Numlock
+//     if((hid_dev_addr!=255)&&(hid_instance!=255)) {
+//         tuh_hid_set_report(hid_dev_addr, hid_instance, 0, HID_REPORT_TYPE_OUTPUT, &hid_led, sizeof(hid_led));
+//     }
 
-}
+// }
 
 static inline int16_t getkeycode(uint8_t modifier,uint8_t keycode) {
 
@@ -1538,18 +1007,6 @@ static inline int16_t getkeycode(uint8_t modifier,uint8_t keycode) {
         }
 
         jr200code=jr200usbcode[keycode*6];
-
-        // Auto repeat control (SHIT+CTRL+0/1)
-
-        // if(modifier&22) {
-        //     if(keycode==0x1e) {
-        //         key_repeat_flag=1;
-        //         return -1;
-        //     }
-        //     if(keycode==0x27) {
-        //         key_repeat_flag=0;
-        //     }
-        // }
 
         if(jr200code==0) return -1;
 
@@ -1610,12 +1067,6 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
     int16_t jr200code;
 
     if(menumode==0) { // Emulator mode
-
-        // unsigned char str[16];
-        // sprintf(str,"%d",sub_cpu.cycles);
-        // cursor_x=60;
-        // cursor_y=24;
-        // video_print(str);
 
 //        printf("%d",sub_cpu.cycles);
 
@@ -1753,8 +1204,6 @@ uint8_t subcpu_read() {
 
     uint8_t keycode;
 
-//printf("[S:%04x]",m6800_get_reg(M6800_PC));
-
     // Clear IRQ signal
     key_irq=0;
     via_reg[0x1c]&=0xfe;
@@ -1767,7 +1216,7 @@ uint8_t subcpu_read() {
 //            printf("[CR:%x]",subcpu_ktest);
             return fontrom[subcpu_ktest++];
         } else {        // Baudrate switch
-            printf("[CR:%x]",subcpu_ktest);
+//            printf("[CR:%x]",subcpu_ktest);
             subcpu_ktest++;
             return 0;
         }
@@ -1809,6 +1258,7 @@ uint8_t subcpu_read() {
 void settimer(uint16_t address,uint8_t data) {
 
     uint8_t number;
+    uint32_t interval;
 
     switch(address) {
 
@@ -1844,7 +1294,18 @@ void settimer(uint16_t address,uint8_t data) {
             via_timercount[number]=via_prescalecount[number]*via_reload[number];
 
             // check beep on 
-        
+  
+            if((number==2)||(number==3)) {  // TC & TD
+
+                if((via_timercount[number]!=0)&&((data&0x7)==6)) {
+                    interval=via_timercount[number]*TIMER_INTERVAL;
+                    psg_osc_interval[number-2]=interval;
+                    psg_tone_on[number-2]=1;
+                } else {
+                    psg_tone_on[number-2]=0;
+                }
+            }
+
             return;
 
         case 0x16:
@@ -1864,7 +1325,19 @@ void settimer(uint16_t address,uint8_t data) {
 
             via_timercount[number]=via_prescalecount[number]*via_reload[number];
 
-            return;        
+            // check beep on 
+  
+            if(number==5) {  // TF
+                if((via_timercount[number]!=0)&&((via_reg[0x19]&0x7)==6)) {
+                    interval=via_timercount[number]*TIMER_INTERVAL; 
+                    psg_osc_interval[2]=interval;
+                    psg_tone_on[2]=1;
+                } else {
+                    psg_tone_on[2]=0;
+                }
+            }
+
+            return;
 
         case 0xf:
         case 0x11:
@@ -1873,6 +1346,22 @@ void settimer(uint16_t address,uint8_t data) {
 
             number=(address-0xf)>>1;
             via_reload[number]=data;
+
+            via_timercount[number]=via_prescalecount[number]*via_reload[number];
+
+            // check beep on 
+  
+            if((number==2)||(number==3)) {  // TC & TD
+
+                if((via_timercount[number]!=0)&&((via_reg[address-1]&0x7)==6)) {
+                    interval=via_timercount[number]*TIMER_INTERVAL;
+                    psg_osc_interval[number-2]=interval;
+                    psg_tone_on[number-2]=1;
+                } else {
+                    psg_tone_on[number-2]=0;
+                }
+            }
+
             return;
 
         case 0x17:
@@ -1880,6 +1369,24 @@ void settimer(uint16_t address,uint8_t data) {
 
             number=(address-0x17)/3+4;
             via_reload[number]=data*256+via_reg[address+1];
+
+            number=(address-0xf)>>1;
+            via_reload[number]=data;
+
+            via_timercount[number]=via_prescalecount[number]*via_reload[number];
+
+            // check beep on 
+  
+            if(number==5) {  // TF
+                if((via_timercount[number]!=0)&&((via_reg[0x19]&0x7)==6)) {
+                    interval=via_timercount[number]*TIMER_INTERVAL;
+                    psg_osc_interval[2]=interval;
+                    psg_tone_on[2]=1;
+                } else {
+                    psg_tone_on[2]=0;
+                }
+            }
+
             return;
 
         case 0x18:
@@ -1887,6 +1394,22 @@ void settimer(uint16_t address,uint8_t data) {
 
             number=(address-0x18)/3+4;
             via_reload[number]=via_reg[address-1]*256+data;
+
+            number=(address-0xf)>>1;
+            via_reload[number]=data;
+
+            via_timercount[number]=via_prescalecount[number]*via_reload[number];
+
+            if(number==5) {  // TF
+                if((via_timercount[number]!=0)&&((via_reg[0x19]&0x7)==6)) {
+                    interval=via_timercount[number]*TIMER_INTERVAL;
+                    psg_osc_interval[2]=interval;
+                    psg_tone_on[2]=1;
+                } else {
+                    psg_tone_on[2]=0;
+                }
+            }
+
             return;
 
         default:
@@ -1909,13 +1432,16 @@ void exectimer(uint16_t cycles) {
             timer_status=via_reg[i*2+0xf];            
         }
 
-
         if((i<2)&&(timer_status&1)==0) {    // Counter disabled
             continue;
         }
-        if((i>=2)&(timer_status&0x7)!=6) {
+        if((i>=2)&(timer_status&3)!=2) {
             continue;
         }
+
+// if(i==4) {
+//     printf("[%x:%x]",via_timercount[4],via_reg[0x1f]);
+// }
 
         // check prescale
 
@@ -1926,10 +1452,10 @@ void exectimer(uint16_t cycles) {
 
         // IRQ
         if(timer_status&0x40) {
-            if(via_reg[0x1f]&(1>>(i-1))) {
 
+            if(via_reg[0x1f]&(1<<i)) {
                 timer_enable_irq=1;
-                via_reg[0x1d]|=(1>>(i-1));
+                via_reg[0x1d]|=(1<<i);
 
             }
         }    
@@ -2005,6 +1531,12 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
                         key_basic_flag=0;
                     }
 
+                    if(bdat&0x40) {
+                        key_click=1;
+                    } else {
+                        key_click=0;                   
+                    }
+
                     via_reg[3]=bdat;
                     return;
 
@@ -2012,10 +1544,10 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
 
                     if(bdat&0x40) {
                         tape_ready=1;
-                        printf("[CMT:ON]");
+//                        printf("[CMT:ON]");
                     } else {
                         tape_ready=0;
-                        printf("[CMT:OFF]");
+//                        printf("[CMT:OFF]");
                     }
 
                     via_reg[7]=bdat;
@@ -2023,10 +1555,8 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
 
                 case 0xd:   // CMT data
 
-                    printf("[%02x]",bdat);
+//                    printf("[%02x]",bdat);
                     tapeout(bdat);
-
-
 
                     return;
 
@@ -2052,7 +1582,7 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
                 case 0x1a:
                 case 0x1b:
 
-                printf("[TRW:%x:%x]",addr&0x1f,bdat);
+//                printf("[TRW:%x:%x]",addr&0x1f,bdat);
 
                     via_reg[addr&0x1f]=bdat;
                     settimer(addr&0x1f,bdat);
@@ -2225,6 +1755,9 @@ void init_emulator(void) {
 
     gamepad_info=0x3f;
 
+    // Beep freq
+
+    psg_osc_interval[3]=(TIME_UNIT/880);
 
 }
 
@@ -2242,16 +1775,9 @@ void main_core1(void) {
     irq_set_enabled(PIO0_IRQ_0, true);
     pio_set_irq0_source_enabled (pio0, pis_interrupt0 , true);
 
-    // set PSG timer
-    // Use polling insted for I2S mode
-
-    // add_repeating_timer_us(1000000/SAMPLING_FREQ,sound_handler,NULL  ,&timer2);
-
     while(1) { 
 
-#ifdef USE_I2S
-        i2s_process();
-#endif
+        tight_loop_contents();
 
     }
 }
@@ -2284,18 +1810,12 @@ int main() {
     gpio_set_drive_strength(2,GPIO_DRIVE_STRENGTH_2MA);
     gpio_set_drive_strength(3,GPIO_DRIVE_STRENGTH_2MA);
     gpio_set_drive_strength(4,GPIO_DRIVE_STRENGTH_2MA);
-    gpio_set_drive_strength(5,GPIO_DRIVE_STRENGTH_2MA);
-    gpio_set_drive_strength(6,GPIO_DRIVE_STRENGTH_2MA);
-    gpio_set_drive_strength(7,GPIO_DRIVE_STRENGTH_2MA);
-    gpio_set_drive_strength(8,GPIO_DRIVE_STRENGTH_2MA);
-    gpio_set_drive_strength(9,GPIO_DRIVE_STRENGTH_2MA);
-
 
     // Beep & PSG
 
-    gpio_set_function(10,GPIO_FUNC_PWM);
+    gpio_set_function(6,GPIO_FUNC_PWM);
  //   gpio_set_function(11,GPIO_FUNC_PWM);
-    pwm_slice_num = pwm_gpio_to_slice_num(10);
+    pwm_slice_num = pwm_gpio_to_slice_num(6);
 
     pwm_set_wrap(pwm_slice_num, 256);
     pwm_set_chan_level(pwm_slice_num, PWM_CHAN_A, 0);
@@ -2307,7 +1827,6 @@ int main() {
     add_repeating_timer_us(1000000/SAMPLING_FREQ,sound_handler,NULL  ,&timer2);
 
     tuh_init(BOARD_TUH_RHPORT);
-
 
 //    video_cls();
 
@@ -2327,14 +1846,6 @@ int main() {
     multicore_lockout_victim_init();
 
     sleep_ms(1);
-
-#ifdef USE_OPLL
-    // set Hsync timer
-
-    irq_set_exclusive_handler (PIO0_IRQ_0, hsync_handler);
-    irq_set_enabled(PIO0_IRQ_0, true);
-    pio_set_irq0_source_enabled (pio0, pis_interrupt0 , true);
-#endif
 
 // mount littlefs
     if(lfs_mount(&lfs,&PICO_FLASH_CFG)!=0) {
@@ -2414,7 +1925,7 @@ int main() {
 
         if(video_vsync==1) { // Timer
             tuh_task();
-            process_kbd_leds();
+//            process_kbd_leds();
 
             // Process Keyrepeat
 
