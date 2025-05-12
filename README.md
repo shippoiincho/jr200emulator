@@ -1,8 +1,5 @@
 # Matsushita JR-200 Emulator for Raspberry Pi Pico
 
-# WORK IN PROGRESS
-現在作成中のため、ここに書かれた機能のうち未実装の物があります。
-
 ---
 # 概要
 
@@ -32,13 +29,15 @@ Pico と VGA コネクタやブザー/スピーカーなどを以下のように
 ---
 # サウンド
 
+内蔵タイマーによるサウンド出力(PLAY/SOUND 文)に対応しています。
+GPIO6 に PWM で出力されます。
 
 ---
 # 使い方
 
 `prebuild` 以下にある uf2 ファイルを Pico に書き込みます。
 
-- msxemulator.uf2           PWM 出力(PSGのみ) 
+- jr200emulator.uf2
 
 
 初めて使う場合には、システム ROM などの書き込みが必要です。
@@ -52,13 +51,13 @@ Pico と VGA コネクタやブザー/スピーカーなどを以下のように
 
 ```
 BASIC ROM
-$ picotool load -v -x basic.rom -t bin -o 0x10030000
+$ picotool load -v -x basic.rom -t bin -o 0x10020000
 
 MONITOR ROM
-$ picotool load -v -x monitor.rom -t bin -o 0x10038000
+$ picotool load -v -x monitor.rom -t bin -o 0x10028000
 
 FONT 
-$ picotool load -v -x font.rom -t bin -o 0x1003C000
+$ picotool load -v -x font.rom -t bin -o 0x1002C000
 ```
 
 

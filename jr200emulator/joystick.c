@@ -174,7 +174,7 @@ void parse_gamepad_report(uint8_t const *report, uint16_t len , uint8_t instance
 
         gamepad_info=0xff;
 
-//        if(value&32) {gamepad_info&=0x1f;};   // TRIG B
+        if(value&32) {gamepad_info&=0xdf;};   // TRIG B
         if(value&16) {gamepad_info&=0xef;};   // TRIG A
         if(value&8) {gamepad_info&=0xfb;};   // Left
         if(value&4) {gamepad_info&=0xfd;};   // Down

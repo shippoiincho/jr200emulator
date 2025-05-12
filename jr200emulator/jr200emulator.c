@@ -1948,7 +1948,7 @@ int main() {
             // Process Keyrepeat
 
             if((key_repeat_flag)&&(key_repeat_count!=0)) {
-                if((total_scanline-key_repeat_count)==40*525) {
+                if((total_scanline-key_repeat_count)==30*525) {
                     key_irq=1;
                     via_reg[0x1c]|=1;
                     keyboard_cycles=cpu_cycles;
