@@ -8,6 +8,7 @@
 //  GP6: Audio
 
 #define HW_FLASH_STORAGE_MEGABYTES 2
+//#define DEBUG
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,11 @@
 #include "jr200rom.h"
 
 #include "lfs.h"
+
+#if defined(DEBUG)
+#include "jr200_test.h"
+#endif
+
 
 // VGAout configuration
 
@@ -79,7 +85,7 @@ uint32_t subcpu_ktest=0;
 uint8_t mainram[0x10000];
 //uint8_t ioport[0x100];
 uint8_t via_reg[0x20];
-uint16_t via_timercount[6];
+uint32_t via_timercount[6];
 uint16_t via_prescalecount[6];
 uint16_t via_reload[6];
 
@@ -1079,12 +1085,14 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
 
     int usbkey;
     int16_t jr200code;
+    uint32_t key_pressed;
 
     if(menumode==0) { // Emulator mode
 
 //        printf("%d",sub_cpu.cycles);
 
         key_repeat_count=0;
+        key_pressed=0;
 
         if(report->modifier!=lastmodifier) {  // stop auto repeat when modifier changed
 
@@ -1115,6 +1123,7 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
                 if(jr200code!=-1) {
 
                     jr200keypressed=jr200code;
+                    key_pressed=1;
 
                     key_irq=1;
                     via_reg[0x1c]|=1;
@@ -1129,6 +1138,8 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
 
                 if(jr200code==0x100) { // BASIC Keyword mode
                     key_irq=1;
+                    key_pressed=1;
+
                     key_basic_code=report->keycode[i];
                     key_basic_bytes=0;
                     via_reg[0x1c]|=1;
@@ -1176,6 +1187,17 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
                     key_break_flag=1;             
                 }
 
+#ifdef DEBUG
+           // Enter Menu
+           if(report->keycode[i]==0x44) {
+
+//            memcpy(mainram+0x4000,jr200test,sizeof(jr200test));
+//            memcpy(mainram+0x2000,jr200test,sizeof(jr200test));
+            memcpy(mainram+0x5000,jr200test,sizeof(jr200test));
+           
+        }  
+
+#endif
 
             // Enter Menu
             if(report->keycode[i]==0x45) {
@@ -1188,6 +1210,10 @@ void process_kbd_report(hid_keyboard_report_t const *report) {
             }   
 
         }
+
+    if(!key_pressed) {
+        jr200keypressed=0;
+    }
 
     prev_report=*report;
 
@@ -1358,6 +1384,11 @@ void settimer(uint16_t address,uint8_t data) {
                 }
             }
 
+            if(number==4) {
+                printf("[TE:%x:%x,%x]",via_timercount[4] ,via_reload[4],via_prescalecount[4]);
+            }
+
+
             return;
 
         case 0xf:
@@ -1391,9 +1422,6 @@ void settimer(uint16_t address,uint8_t data) {
             number=(address-0x17)/3+4;
             via_reload[number]=data*256+via_reg[address+1];
 
-            number=(address-0xf)>>1;
-            via_reload[number]=data;
-
             via_timercount[number]=via_prescalecount[number]*via_reload[number];
 
             // check beep on 
@@ -1415,9 +1443,6 @@ void settimer(uint16_t address,uint8_t data) {
 
             number=(address-0x18)/3+4;
             via_reload[number]=via_reg[address-1]*256+data;
-
-            number=(address-0xf)>>1;
-            via_reload[number]=data;
 
             via_timercount[number]=via_prescalecount[number]*via_reload[number];
 
@@ -1459,10 +1484,6 @@ void exectimer(uint16_t cycles) {
         if((i>=2)&(timer_status&3)!=2) {
             continue;
         }
-
-// if(i==4) {
-//     printf("[%x:%x]",via_timercount[4],via_reg[0x1f]);
-// }
 
         // check prescale
 
@@ -1588,7 +1609,7 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
                 case 0x16:
                 case 0x19:
 
-//                printf("[TCW:%x:%x]",addr&0x1f,bdat);
+//                printf("[TCW:%x:%x:%x]",addr&0x1f,bdat,m6800_get_reg(M6800_PC));
 
                     via_reg[addr&0x1f]=bdat;
                     settimer(addr&0x1f,bdat);
@@ -1607,6 +1628,53 @@ void cpu_writemem16(unsigned short addr, unsigned char bdat) { // RAM access is 
 
                     via_reg[addr&0x1f]=bdat;
                     settimer(addr&0x1f,bdat);
+                    return;
+
+
+                // IRQ control
+
+                case 0x1f:
+
+printf("[IM:%x]",bdat);
+
+                    via_reg[0x1f]=bdat;
+
+                    if(bdat&1) { 
+                        via_reg[0xe]|=0x40;
+                    } else {
+                        via_reg[0xe]&=0xbf;
+                    }
+
+                    if(bdat&2) { 
+                        via_reg[0x10]|=0x40;
+                    } else {
+                        via_reg[0x10]&=0xbf;
+                    }
+
+                    if(bdat&4) { 
+                        via_reg[0x12]|=0x40;
+                    } else {
+                        via_reg[0x12]&=0xbf;
+                    }
+
+                    if(bdat&8) { 
+                        via_reg[0x14]|=0x40;
+                    } else {
+                        via_reg[0x14]&=0xbf;
+                    }
+
+                    if(bdat&0x10) { 
+                        via_reg[0x16]|=0x40;
+                    } else {
+                        via_reg[0x16]&=0xbf;
+                    }
+
+                    if(bdat&0x20) { 
+                        via_reg[0x19]|=0x40;
+                    } else {
+                        via_reg[0x19]&=0xbf;
+                    }
+
                     return;
 
                 default:
@@ -1678,7 +1746,38 @@ unsigned char cpu_readmem16(unsigned short addr) { // to allow for memory-mapped
 
 //                    printf("[TC:%x:%x:%x]",timer_ch,via_reg[timer_ch],via_timercount[(timer_ch-0x1f)>>2]);
                     bdat=via_reg[timer_ch];
+
                     via_reg[timer_ch]&=0xdf;
+
+                    // clear irq
+
+                    switch(timer_ch) {
+                        case 0xe:
+                            via_reg[0x1d]&=0xfe;
+                            break;
+                        case 0x10:
+                            via_reg[0x1d]&=0xfd;
+                            break;
+                        case 0x12:
+                            via_reg[0x1d]&=0xfb;
+                            break;
+                        case 0x14:
+                            via_reg[0x1d]&=0xf7;
+                            break;
+                        case 0x16:
+                            via_reg[0x1d]&=0xef;
+                            break;
+                        case 0x19:
+                            via_reg[0x1d]&=0xdf;
+                            break;  
+                    }
+
+                    if(via_reg[0x1d]&0x7f) {
+                        timer_enable_irq=1;
+                    } else {
+                        timer_enable_irq=0;
+                    }
+
                     return bdat;
 
                 case 0xf:   // Timer count (8bits)
@@ -1709,7 +1808,8 @@ unsigned char cpu_readmem16(unsigned short addr) { // to allow for memory-mapped
     
                 case 0x1c:  // IRQ status 1
 
-                    if((key_irq)||(timer_enable_irq)) {           // TODO Timer irq
+//                    if((key_irq)||(timer_enable_irq)) {
+                    if((via_reg[0x1c]&0x7f)||(via_reg[0x1d]&0x7f)) {
                         return via_reg[0x1c]|0x80;
                     } else {
                         return via_reg[0x1c];
@@ -1717,11 +1817,11 @@ unsigned char cpu_readmem16(unsigned short addr) { // to allow for memory-mapped
 
                 case 0x1d:  // IRQ status 2
 
-                    if((key_irq)||(timer_enable_irq)) {
+//                    printf("[IR:%x]",via_reg[0x1d]);
+
+//                    if((key_irq)||(timer_enable_irq)) {
+                    if((via_reg[0x1c]&0x7f)||(via_reg[0x1d]&0x7f)) {
                         bdat=via_reg[0x1d]|0x80;
-
-                        via_reg[0x1d]=0;        // ??
-
                         return bdat;
                     } else {
                         return via_reg[0x1d];
@@ -1910,12 +2010,12 @@ int main() {
 
 //        if((cpu_cycles-cpu_hsync)>1 ) { // 63us * 3.58MHz = 227
 
-        // if((!cpu_boost)&&(cpu_cycles-cpu_hsync)>198 ) { // 63us * 3.58MHz = 227
+        if((!cpu_boost)&&(cpu_cycles-cpu_hsync)>82 ) { // 
 
-        //     while(video_hsync==0) ;
-        //     cpu_hsync=cpu_cycles;
-        //     video_hsync=0;
-        // }
+            while(video_hsync==0) ;
+            cpu_hsync=cpu_cycles;
+            video_hsync=0;
+        }
 
         // Break key
         if(key_break_flag==1) {
@@ -1934,8 +2034,8 @@ int main() {
         // Timer IRQ
         if((timer_enable_irq==1)) {
                 if((m6800_get_reg(M6800_CC)&0x10)==0) {
-                    timer_enable_irq=0;
-//                    printf("[TON]");
+                    timer_enable_irq=2;
+//                    printf("[TON:%x]",via_reg[0x1d]);
                     ENTER_INTERRUPT2("", 0xfff8);
                 }
         }
@@ -2058,13 +2158,13 @@ int main() {
             video_print("->");
 
    // for DEBUG ...
-
+#ifdef DEBUG
            cursor_x=0;
             cursor_y=23;
                  sprintf(str,"%04x %04x %04x %04x %04x",m6800_get_reg(M6800_PC),m6800_get_reg(M6800_A),m6800_get_reg(M6800_B),m6800_get_reg(M6800_X),m6800_get_reg(M6800_CC));
 //                 sprintf(str,"%04x",Z80_PC(cpu));
                  video_print(str);
-
+#endif
             if(filelist==0) {
                 draw_files(-1,0);
                 filelist=1;
