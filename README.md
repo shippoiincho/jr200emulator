@@ -1,5 +1,6 @@
 # Matsushita JR-200 Emulator for Raspberry Pi Pico
 
+![BASIC](/pictures/screenshot01.jpg)
 ---
 # 概要
 
@@ -111,10 +112,13 @@ Pico の LittleFS 上におかれます。
 # 制限事項
 
 - 起動直後の最初のキーが入力できないことがあります
+- キークリック音は対応していません
 - Gamepad を複数接続するとうまく操作できないことがあります
 - CPU の未定義命令を使っているソフトは動作しません
 
 ---
 # Gallary
 
-
+![GAME1](/pictures/screenshot02.jpg)
+![GAME2](/pictures/screenshot03.jpg)
+![GAME3](/pictures/screenshot00.jpg)
